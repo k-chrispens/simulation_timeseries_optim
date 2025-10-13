@@ -62,6 +62,8 @@ def optimize_weights(F_array, y, n_steps, step_size):
         )
     )
 
+    last_cc = -jnp.inf
+
     for step in range(n_steps):
         g = grad_fn(params, F_array, y)
         updates, opt_state = optimizer.update(g, opt_state)
@@ -71,6 +73,10 @@ def optimize_weights(F_array, y, n_steps, step_size):
             w = jax.nn.sigmoid(params["u"])
             cc = objective(w, F_array, y)
             print(f"Step {step}: Objective = {cc:.6f}")
+        
+        if jnp.allclose(cc, last_cc, atol=1e-6):
+            print(f"Converged at step {step}")
+            break
 
     w = jax.nn.sigmoid(params["u"])
 
