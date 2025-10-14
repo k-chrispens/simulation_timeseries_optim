@@ -1,9 +1,12 @@
 [workspace]
 authors = ["Karson Chrispens <karson.chrispens@ucsf.edu>"]
-channels = ["conda-forge"]
+channels = ["nvidia", "conda-forge"]
 name = "simulation_timeseries_optim"
 platforms = ["osx-arm64", "linux-64"]
 version = "0.1.0"
+
+[feature.gpu.system-requirements]
+cuda = "12"
 
 [tasks]
 
@@ -13,3 +16,6 @@ jax = ">=0.7.2,<0.8"
 optax = ">=0.2.6,<0.3"
 reciprocalspaceship = "*"
 setuptools = "*"
+
+[environments]
+gpu = ["gpu"]

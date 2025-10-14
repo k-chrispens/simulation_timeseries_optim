@@ -128,6 +128,7 @@ if __name__ == "__main__":
     for mtz in glob.glob("diffUSE_CC_opt_test/*.mtz"):
         if mtz.startswith("diffUSE_CC_opt_test/sqrtIdiffuse"):
             continue
+        print("Reading:", mtz.split("/")[-1])
         dataset = (
             rs.read_mtz(mtz)
             .expand_to_p1()[~nas.sqrtIdiff]
