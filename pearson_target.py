@@ -1,4 +1,5 @@
 import warnings
+import glob
 
 import jax
 import jax.numpy as jnp
@@ -9,6 +10,7 @@ import reciprocalspaceship as rs
 
 key = jax.random.PRNGKey(10)
 warnings.filterwarnings("ignore")
+
 
 def pearson_cc(x, y):
     mean_x = jnp.nanmean(x)
@@ -24,10 +26,10 @@ def pearson_cc(x, y):
 
 
 def compute_xprime(w, F_array):
-    # n_timepoints = w.shape[0] # NOTE: commented because if weights are constrained to sum to 1, this should not be in the 
-    
-    weighted_F2 = jnp.einsum("t,t...->...", w, jnp.abs(F_array) ** 2) # / n_timepoints
-    weighted_F = jnp.einsum("t,t...->...", w, F_array) # / n_timepoints
+    # n_timepoints = w.shape[0] # NOTE: commented because if weights are constrained to sum to 1, this should not be in the
+
+    weighted_F2 = jnp.einsum("t,t...->...", w, jnp.abs(F_array) ** 2)  # / n_timepoints
+    weighted_F = jnp.einsum("t,t...->...", w, F_array)  # / n_timepoints
 
     xprime = weighted_F2 - jnp.abs(weighted_F) ** 2
 
@@ -47,8 +49,8 @@ def objective(w, F_array, y):
 def optimize_weights(F_array, y, n_steps, step_size):
     n_timepoints = F_array.shape[0]
 
-    u = jax.random.uniform(key, (n_timepoints,), minval=-5., maxval=5.)
-    # u = jnp.zeros((n_timepoints,))
+    u = jnp.full((n_timepoints,), 1 / n_timepoints)
+
     print("Initial weights:", jax.nn.sigmoid(u))
     print("Initial CC:", objective(jax.nn.sigmoid(u), F_array, y))
 
@@ -58,7 +60,9 @@ def optimize_weights(F_array, y, n_steps, step_size):
 
     grad_fn = jit(
         grad(
-            lambda params, F_array, y: -objective(jax.nn.sigmoid(params["u"]), F_array, y)
+            lambda params, F_array, y: -objective(
+                jax.nn.sigmoid(params["u"]), F_array, y
+            )
         )
     )
 
@@ -73,14 +77,15 @@ def optimize_weights(F_array, y, n_steps, step_size):
             w = jax.nn.sigmoid(params["u"])
             cc = objective(w, F_array, y)
             print(f"Step {step}: Objective = {cc:.6f}")
-        
-        if jnp.allclose(cc, last_cc, atol=1e-6):
+
+        if jnp.allclose(cc, last_cc, atol=1e-5):
             print(f"Converged at step {step}")
             break
 
     w = jax.nn.sigmoid(params["u"])
 
     return w
+
 
 if __name__ == "__main__":
     # n_timepoints = 10
@@ -107,38 +112,51 @@ if __name__ == "__main__":
     # noise = jax.random.normal(subkey5, hkl_shape) * 0.5
     # y = y_true + noise
 
-    gt_dataset = rs.read_mtz("diffUSE_CC_opt_test/sqrtIdiffuse_ground_truth.mtz").expand_to_p1()
+    gt_dataset = rs.read_mtz(
+        "diffUSE_CC_opt_test/sqrtIdiffuse_ground_truth.mtz"
+    ).expand_to_p1()
     nas = gt_dataset.isna()
-    gt_dataset.compute_dHKL(inplace=True)
+    # gt_dataset.compute_dHKL(inplace=True)
     # gt_dataset = gt_dataset[gt_dataset.dHKL > 2.0]
     gt_dataset = gt_dataset[~nas.sqrtIdiff]
     print("Ground truth:\n", gt_dataset.head())
     y = gt_dataset.sqrtIdiff.to_numpy() ** 2
     print("Ground truth obs shape: ", y.shape)
 
-    sim_A_dataset = rs.read_mtz("diffUSE_CC_opt_test/ground_truth_A.mtz").expand_to_p1().dropna()
-    sim_B_dataset = rs.read_mtz("diffUSE_CC_opt_test/ground_truth_B.mtz").expand_to_p1().dropna()
-    sim_A_dataset.compute_dHKL(inplace=True)
-    sim_B_dataset.compute_dHKL(inplace=True)
+    datasets = []
+
+    for mtz in glob.glob("diffUSE_CC_opt_test/*.mtz"):
+        if mtz.startswith("diffUSE_CC_opt_test/sqrtIdiffuse"):
+            continue
+        dataset = (
+            rs.read_mtz(mtz)
+            .expand_to_p1()[~nas.sqrtIdiff]
+            .to_structurefactor("FMODEL", "PHIFMODEL")
+            .to_numpy()
+        )
+        datasets.append(dataset)
+
+    # sim_A_dataset.compute_dHKL(inplace=True)
+    # sim_B_dataset.compute_dHKL(inplace=True)
     # sim_A_dataset = sim_A_dataset[sim_A_dataset.dHKL > 2.0]
     # sim_B_dataset = sim_B_dataset[sim_B_dataset.dHKL > 2.0]
-    sim_A_dataset = sim_A_dataset[~nas.sqrtIdiff]
-    sim_B_dataset = sim_B_dataset[~nas.sqrtIdiff]
-    print("Sim A:\n", sim_A_dataset.head())
-    print("Sim B:\n", sim_B_dataset.head())
-    sim_A_dataset = sim_A_dataset.to_structurefactor("FMODEL", "PHIFMODEL")
-    sim_B_dataset = sim_B_dataset.to_structurefactor("FMODEL", "PHIFMODEL")
-    print("Sim A after to_structurefactor:\n", sim_A_dataset.head())
-    sim_A = sim_A_dataset.to_numpy()
-    sim_B = sim_B_dataset.to_numpy()
-    print("Sim A obs shape: ", sim_A.shape)
-    print("Sim B obs shape: ", sim_B.shape)
+    # sim_A_dataset = sim_A_dataset[~nas.sqrtIdiff]
+    # sim_B_dataset = sim_B_dataset[~nas.sqrtIdiff]
+    # print("Sim A:\n", sim_A_dataset.head())
+    # print("Sim B:\n", sim_B_dataset.head())
+    # sim_A_dataset = sim_A_dataset.to_structurefactor("FMODEL", "PHIFMODEL")
+    # sim_B_dataset = sim_B_dataset.to_structurefactor("FMODEL", "PHIFMODEL")
+    # print("Sim A after to_structurefactor:\n", sim_A_dataset.head())
+    # sim_A = sim_A_dataset.to_numpy()
+    # sim_B = sim_B_dataset.to_numpy()
+    # print("Sim A obs shape: ", sim_A.shape)
+    # print("Sim B obs shape: ", sim_B.shape)
 
-    F_array = jnp.stack([sim_A, sim_B], axis=0)
+    F_array = jnp.stack(datasets, axis=0)
 
     print("F_array shape:", F_array.shape)
 
-    weights = optimize_weights(F_array, y, n_steps=100, step_size=0.05)
+    weights = optimize_weights(F_array, y, n_steps=500, step_size=0.05)
 
     print("\nFinal weights:", weights)
 
