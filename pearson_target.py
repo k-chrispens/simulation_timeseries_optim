@@ -125,7 +125,8 @@ if __name__ == "__main__":
 
     datasets = []
 
-    for mtz in glob.glob("diffUSE_CC_opt_test/*.mtz"):
+    mtzs = glob.glob("diffUSE_CC_opt_test/*.mtz")
+    for mtz in mtzs:
         if mtz.startswith("diffUSE_CC_opt_test/sqrtIdiffuse"):
             continue
         print("Reading:", mtz.split("/")[-1])
@@ -159,6 +160,7 @@ if __name__ == "__main__":
 
     weights = optimize_weights(F_array, y, n_steps=500, step_size=0.05)
 
+    print("Datasets: ", [mtz.split("/")[-1] for mtz in mtzs])
     print("\nFinal weights:", weights)
 
     xprime = compute_xprime(weights, F_array)
