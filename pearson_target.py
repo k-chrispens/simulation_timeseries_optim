@@ -36,23 +36,26 @@ def compute_xprime(w, F_array):
     return xprime
 
 
-def objective(w, F_array, y):
+def objective(w, F_array, y, lambda_l1=0., lambda_l2=0.):
     xprime = compute_xprime(w, F_array)
     xprime_flat = xprime.flatten()
     y_flat = y.flatten()
 
     cc = pearson_cc(xprime_flat, y_flat)
 
-    return cc
+    l2_penalty = lambda_l2 * jnp.mean((w - 1.0)**2)
+    l1_penalty = lambda_l1 * jnp.mean(jnp.abs(w - 1.0))
+    
+    return cc - l2_penalty - l1_penalty
 
 
-def optimize_weights(F_array, y, n_steps, step_size):
+def optimize_weights(F_array, y, n_steps, step_size, lambda_l1=0., lambda_l2=0.):
     n_timepoints = F_array.shape[0]
 
-    u = jnp.full((n_timepoints,), 1 / n_timepoints)
+    u = jnp.full((n_timepoints,), -jax.numpy.log(n_timepoints - 1))
 
     print("Initial weights:", jax.nn.sigmoid(u))
-    print("Initial CC:", objective(jax.nn.sigmoid(u), F_array, y))
+    print("Initial CC:", objective(jax.nn.sigmoid(u), F_array, y, lambda_l1, lambda_l2))
 
     optimizer = adam(step_size)
     params = {"u": u}
@@ -61,7 +64,7 @@ def optimize_weights(F_array, y, n_steps, step_size):
     grad_fn = jit(
         grad(
             lambda params, F_array, y: -objective(
-                jax.nn.sigmoid(params["u"]), F_array, y
+                jax.nn.sigmoid(params["u"]), F_array, y, lambda_l1, lambda_l2
             )
         )
     )
@@ -138,32 +141,14 @@ if __name__ == "__main__":
         )
         datasets.append(dataset)
 
-    # sim_A_dataset.compute_dHKL(inplace=True)
-    # sim_B_dataset.compute_dHKL(inplace=True)
-    # sim_A_dataset = sim_A_dataset[sim_A_dataset.dHKL > 2.0]
-    # sim_B_dataset = sim_B_dataset[sim_B_dataset.dHKL > 2.0]
-    # sim_A_dataset = sim_A_dataset[~nas.sqrtIdiff]
-    # sim_B_dataset = sim_B_dataset[~nas.sqrtIdiff]
-    # print("Sim A:\n", sim_A_dataset.head())
-    # print("Sim B:\n", sim_B_dataset.head())
-    # sim_A_dataset = sim_A_dataset.to_structurefactor("FMODEL", "PHIFMODEL")
-    # sim_B_dataset = sim_B_dataset.to_structurefactor("FMODEL", "PHIFMODEL")
-    # print("Sim A after to_structurefactor:\n", sim_A_dataset.head())
-    # sim_A = sim_A_dataset.to_numpy()
-    # sim_B = sim_B_dataset.to_numpy()
-    # print("Sim A obs shape: ", sim_A.shape)
-    # print("Sim B obs shape: ", sim_B.shape)
-
     F_array = jnp.stack(datasets, axis=0)
 
     print("F_array shape:", F_array.shape)
 
-    weights = optimize_weights(F_array, y, n_steps=500, step_size=0.05)
+    weights = optimize_weights(F_array, y, n_steps=500, step_size=0.05, lambda_l1=0.1, lambda_l2=0.)
 
-    print("Datasets: ", [mtz.split("/")[-1] for mtz in mtzs])
+    print("Datasets:", [mtz.split("/")[-1] for mtz in mtzs if "sqrtIdiffuse" not in mtz])
     print("\nFinal weights:", weights)
 
     xprime = compute_xprime(weights, F_array)
-    # print("\nFinal xprime:", xprime)
-    # print("Target y:", y)
     print("Final CC:", pearson_cc(xprime, y))
