@@ -49,8 +49,9 @@ def objective(w, F_array, y, lambda_l1=0., lambda_l2=0.):
     return cc - l2_penalty - l1_penalty
 
 
-def optimize_weights(F_array, y, n_steps, step_size, lambda_l1=0., lambda_l2=0.):
+def optimize_weights(F_array, y, n_steps, step_size, batch_size=100000, lambda_l1=0., lambda_l2=0.):
     n_timepoints = F_array.shape[0]
+    n_reflections = y.shape[0]
 
     u = jnp.full((n_timepoints,), -jax.numpy.log(n_timepoints - 1))
 
@@ -73,6 +74,16 @@ def optimize_weights(F_array, y, n_steps, step_size, lambda_l1=0., lambda_l2=0.)
 
     for step in range(n_steps):
         g = grad_fn(params, F_array, y)
+        updates, opt_state = optimizer.update(g, opt_state)
+        params = apply_updates(params, updates)
+
+        batch_key = jax.random.fold_in(key, step)
+        batch_indices = jax.random.choice(batch_key, n_reflections, shape=(batch_size,), replace=False)
+        
+        F_batch = F_array[:, batch_indices]
+        y_batch = y[batch_indices]
+        
+        g = grad_fn(params, F_batch, y_batch)
         updates, opt_state = optimizer.update(g, opt_state)
         params = apply_updates(params, updates)
 
