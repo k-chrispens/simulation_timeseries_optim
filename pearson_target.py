@@ -286,8 +286,8 @@ def optimize_weights_batched_hkl(
     Instead of loading all data to GPU at once, randomly sample HKLs each step.
 
     Args:
-        datasets_cpu: List of numpy arrays (one per MTZ), kept in CPU memory
-        y_cpu: Ground truth intensities in CPU memory
+        datasets_cpu: List of numpy arrays (one per MTZ), kept in system memory
+        y_cpu: Ground truth intensities in system memory
         n_steps: Number of optimization steps
         step_size: Learning rate for optimizer
         hkl_batch_size: Number of HKLs to load to GPU per step
@@ -304,7 +304,7 @@ def optimize_weights_batched_hkl(
     n_timepoints = len(datasets_cpu)
     n_reflections = y_cpu.shape[0]
 
-    print(f"Batched HKL optimization:")
+    print("Batched HKL optimization:")
     print(f"  Total reflections: {n_reflections}")
     print(f"  HKL batch size: {hkl_batch_size}")
     print(f"  Datasets: {n_timepoints}")
@@ -318,7 +318,8 @@ def optimize_weights_batched_hkl(
     else:
         # Direct parameterization
         u = jnp.ones((n_timepoints,)) / n_timepoints
-        transform_fn = lambda x: x
+        def transform_fn(x):
+            return x  # Identity
 
     print("Initial weights:", transform_fn(u))
 
@@ -443,7 +444,7 @@ def subsample_reflections(datasets, y, subsample_fraction=1.0, random_seed=42):
 
 def load_mtzs_cpu_only(mtz_files, nas, y, subsample_fraction=1.0):
     """
-    Load MTZ files and keep them in CPU memory (for batched HKL loading).
+    Load MTZ files and keep them in system memory (for batched HKL loading).
 
     Args:
         mtz_files: List of MTZ file paths
@@ -452,7 +453,7 @@ def load_mtzs_cpu_only(mtz_files, nas, y, subsample_fraction=1.0):
         subsample_fraction: Fraction of reflections to keep
 
     Returns:
-        datasets: List of numpy arrays (kept in CPU memory)
+        datasets: List of numpy arrays (kept in system memory)
         y: Ground truth intensities (potentially subsampled)
     """
     datasets = []
@@ -477,10 +478,10 @@ def load_mtzs_cpu_only(mtz_files, nas, y, subsample_fraction=1.0):
             datasets, y, subsample_fraction=subsample_fraction
         )
 
-    print(f"Loaded {len(datasets)} datasets to CPU memory")
+    print(f"Loaded {len(datasets)} datasets to system memory")
     print(f"Reflection shape: {datasets[0].shape}")
     total_size = sum(d.nbytes for d in datasets) / 1e9
-    print(f"Total data size: {total_size:.2f} GB (in CPU memory)")
+    print(f"Total data size: {total_size:.2f} GB (in system memory)")
 
     return datasets, y
 
@@ -551,15 +552,15 @@ if __name__ == "__main__":
                              # If False, load all data to GPU once (faster but uses more memory)
 
     # Memory reduction options (only used if USE_BATCHED_HKL=False)
-    USE_SHARDING = False  # Set to True to use multi-GPU sharding
+    USE_SHARDING = True  # Set to True to use multi-GPU sharding
     SUBSAMPLE_FRACTION = 1.0  # Fraction of reflections to use (e.g., 0.5 = 50%)
 
     # Batched HKL options (only used if USE_BATCHED_HKL=True)
     HKL_BATCH_SIZE = 20000  # Number of HKLs to load to GPU per optimization step
 
     # Sparse optimization options
-    USE_PROXIMAL = True  # Set to True to use TRUE proximal gradient descent
-    USE_SIGMOID = False  # Must be False for proximal (allows weights to reach 0)
+    USE_PROXIMAL = True  # Set to True to use proximal gradient descent
+    USE_SIGMOID = False
     HARD_THRESHOLD_FINAL = (
         0.01  # Apply hard threshold after optimization (None to disable)
     )
@@ -594,7 +595,7 @@ if __name__ == "__main__":
     # Load ground truth
     print("\nLoading ground truth...")
     gt_dataset = rs.read_mtz(
-        "diffUSE_CC_opt_test/sqrtIdiffuse_ground_truth.mtz"
+        "sqrtIdiff_observed.mtz"
     ).expand_to_p1()
     nas = gt_dataset.isna()
     gt_dataset = gt_dataset[~nas.sqrtIdiff]
@@ -604,7 +605,7 @@ if __name__ == "__main__":
 
     # Load MTZ files
     print("\nLoading MTZ files...")
-    mtzs = glob.glob("diffUSE_CC_opt_test/*.mtz")
+    mtzs = glob.glob("mtz1.8A/*.mtz")
     mtz_files = [mtz for mtz in mtzs if "sqrtIdiffuse" not in mtz]
 
     # Optimize weights with sparse optimization
@@ -613,7 +614,7 @@ if __name__ == "__main__":
     print("=" * 60)
 
     if USE_BATCHED_HKL:
-        # Load data to CPU memory only
+        # Load data to system memory only
         datasets_cpu, y = load_mtzs_cpu_only(
             mtz_files,
             nas,
@@ -635,7 +636,7 @@ if __name__ == "__main__":
             hard_threshold_final=HARD_THRESHOLD_FINAL,
         )
 
-        # For final evaluation, load a subset to GPU
+        # For final evaluation, load a subset to GPU so we don't run out of memory again
         print("\nFinal evaluation...")
         eval_size = min(50000, y.shape[0])
         F_eval = jnp.stack([d[:eval_size] for d in datasets_cpu], axis=0)
