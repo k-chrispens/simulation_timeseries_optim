@@ -81,7 +81,7 @@ def pearson_cc(x, y):
 
 
 def compute_xprime(w, F_array):
-    # n_timepoints = w.shape[0] # NOTE: commented because if weights are constrained to sum to 1, this should not be in the
+    # n_timepoints = w.shape[0] # NOTE: commented because if weights are constrained to sum to 1, this should not be in there
 
     weighted_F2 = jnp.einsum("t,t...->...", w, jnp.abs(F_array) ** 2)  # / n_timepoints
     weighted_F = jnp.einsum("t,t...->...", w, F_array)  # / n_timepoints
@@ -221,23 +221,6 @@ def optimize_weights(
         if use_proximal:
             # The proximal operator accounts for the L1 penalty
             # Scaling by step_size is crucial for convergence
-            params["u"] = soft_threshold(params["u"], step_size * lambda_l1)
-
-        # Batched gradient step
-        batch_key = jax.random.fold_in(key, step)
-        batch_indices = jax.random.choice(
-            batch_key, n_reflections, shape=(batch_size,), replace=False
-        )
-
-        F_batch = F_array[:, batch_indices]
-        y_batch = y[batch_indices]
-
-        g = grad_fn(params, F_batch, y_batch)
-        updates, opt_state = optimizer.update(g, opt_state)
-        params = apply_updates(params, updates)
-
-        # Apply proximal operator again after batch step
-        if use_proximal:
             params["u"] = soft_threshold(params["u"], step_size * lambda_l1)
 
         # Logging and convergence check
@@ -520,7 +503,7 @@ if __name__ == "__main__":
 
     USE_PROXIMAL = True
     USE_SIGMOID = False
-    HARD_THRESHOLD_FINAL = 0.01
+    # HARD_THRESHOLD_FINAL = 0.01
 
     LAMBDA_L1 = 0.1
     LAMBDA_L2 = 0.0
@@ -581,7 +564,7 @@ if __name__ == "__main__":
             lambda_l2=LAMBDA_L2,
             use_proximal=USE_PROXIMAL,
             use_sigmoid=USE_SIGMOID,
-            hard_threshold_final=HARD_THRESHOLD_FINAL,
+            # hard_threshold_final=HARD_THRESHOLD_FINAL,
             use_sharding=USE_SHARDING,
         )
 
@@ -612,7 +595,7 @@ if __name__ == "__main__":
             lambda_l2=LAMBDA_L2,
             use_proximal=USE_PROXIMAL,
             use_sigmoid=USE_SIGMOID,
-            hard_threshold_final=HARD_THRESHOLD_FINAL,
+            # hard_threshold_final=HARD_THRESHOLD_FINAL,
         )
 
         F_eval = F_array
