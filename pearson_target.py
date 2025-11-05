@@ -434,20 +434,7 @@ def subsample_reflections(datasets, y, subsample_fraction=1.0, random_seed=42):
     return subsampled_datasets, subsampled_y
 
 
-def load_mtzs_cpu_only(mtz_files, nas, y, subsample_fraction=1.0):
-    """
-    Load MTZ files and keep them in system memory (for batched HKL loading).
-
-    Args:
-        mtz_files: List of MTZ file paths
-        nas: NaN mask from ground truth
-        y: Ground truth intensities
-        subsample_fraction: Fraction of reflections to keep
-
-    Returns:
-        datasets: List of numpy arrays (kept in system memory)
-        y: Ground truth intensities (potentially subsampled)
-    """
+def load_mtzs_cpu_only(mtz_files, valid_indices, y, subsample_fraction=1.0):
     datasets = []
 
     for mtz in mtz_files:
@@ -456,7 +443,8 @@ def load_mtzs_cpu_only(mtz_files, nas, y, subsample_fraction=1.0):
         print("Reading:", mtz.split("/")[-1])
         dataset = (
             rs.read_mtz(mtz)
-            .expand_to_p1()[~nas.sqrtIdiff]
+            .expand_to_p1()
+            .loc[valid_indices]
             .to_structurefactor("FMODEL", "PHIFMODEL")
             .to_numpy()
         )
@@ -479,23 +467,8 @@ def load_mtzs_cpu_only(mtz_files, nas, y, subsample_fraction=1.0):
 
 
 def load_mtzs_with_sharding(
-    mtz_files, nas, y, use_sharding=False, subsample_fraction=1.0
+    mtz_files, valid_indices, y, use_sharding=False, subsample_fraction=1.0
 ):
-    """
-    Load MTZ files with optional sharding across GPUs and subsampling.
-
-    Args:
-        mtz_files: List of MTZ file paths
-        nas: NaN mask from ground truth
-        y: Ground truth intensities
-        use_sharding: If True, shard data across available GPUs
-        subsample_fraction: Fraction of reflections to keep
-
-    Returns:
-        F_array: Stacked structure factor array (potentially subsampled and sharded)
-        y: Ground truth intensities (potentially subsampled)
-        mesh: Sharding mesh (None if use_sharding=False)
-    """
     datasets = []
 
     for mtz in mtz_files:
@@ -504,7 +477,8 @@ def load_mtzs_with_sharding(
         print("Reading:", mtz.split("/")[-1])
         dataset = (
             rs.read_mtz(mtz)
-            .expand_to_p1()[~nas.sqrtIdiff]
+            .expand_to_p1()
+            .loc[valid_indices]
             .to_structurefactor("FMODEL", "PHIFMODEL")
             .to_numpy()
         )
@@ -576,16 +550,15 @@ if __name__ == "__main__":
     ).expand_to_p1()
     nas = gt_dataset.isna()
     gt_dataset = gt_dataset[~nas.sqrtIdiff]
+    valid_indices = gt_dataset.index
     print("Ground truth:\n", gt_dataset.head())
     y = gt_dataset.sqrtIdiff.to_numpy() ** 2
     print("Ground truth obs shape: ", y.shape)
 
-    # Load MTZ files
     print("\nLoading MTZ files...")
     mtzs = glob.glob("mtz1.8A/*.mtz")
     mtz_files = [mtz for mtz in mtzs if "sqrtIdiffuse" not in mtz]
 
-    # Optimize weights with sparse optimization
     print("\n" + "=" * 60)
     print("Starting optimization...")
     print("=" * 60)
@@ -593,7 +566,7 @@ if __name__ == "__main__":
     if USE_BATCHED_HKL:
         datasets_cpu, y = load_mtzs_cpu_only(
             mtz_files,
-            nas,
+            valid_indices,
             y,
             subsample_fraction=SUBSAMPLE_FRACTION,
         )
@@ -620,7 +593,7 @@ if __name__ == "__main__":
     else:
         F_array, y, mesh = load_mtzs_with_sharding(
             mtz_files,
-            nas,
+            valid_indices,
             y,
             use_sharding=USE_SHARDING,
             subsample_fraction=SUBSAMPLE_FRACTION,
