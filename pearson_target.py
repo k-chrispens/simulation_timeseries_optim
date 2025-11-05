@@ -91,17 +91,39 @@ def compute_xprime(w, F_array):
     return xprime
 
 
-def objective(w, F_array, y, lambda_l1=0.0, lambda_l2=0.0):
+def smooth_objective(w, F_array, y, lambda_l2=0.0):
+    """
+    Smooth part of the objective (without L1 penalty).
+    Used for true proximal gradient descent.
+
+    Args:
+        w: weights
+        F_array: structure factors
+        y: ground truth intensities
+        lambda_l2: L2 regularization strength
+
+    Returns:
+        Smooth objective value (Pearson CC - L2 penalty)
+    """
     xprime = compute_xprime(w, F_array)
     xprime_flat = xprime.flatten()
     y_flat = y.flatten()
 
     cc = pearson_cc(xprime_flat, y_flat)
-
     l2_penalty = lambda_l2 * jnp.mean((w - 1.0) ** 2)
+
+    return cc - l2_penalty
+
+
+def objective(w, F_array, y, lambda_l1=0.0, lambda_l2=0.0):
+    """
+    Full objective including L1 penalty.
+    Used for evaluation and non-proximal optimization.
+    """
+    smooth_obj = smooth_objective(w, F_array, y, lambda_l2)
     l1_penalty = lambda_l1 * jnp.mean(jnp.abs(w - 1.0))
 
-    return cc - l2_penalty - l1_penalty
+    return smooth_obj - l1_penalty
 
 
 def optimize_weights(
@@ -113,7 +135,6 @@ def optimize_weights(
     lambda_l1=0.0,
     lambda_l2=0.0,
     use_proximal=False,
-    proximal_lambda=0.01,
     use_sigmoid=True,
     hard_threshold_final=None,
 ):
@@ -124,13 +145,14 @@ def optimize_weights(
         F_array: Array of structure factors, shape (n_datasets, n_reflections, ...)
         y: Target intensities, shape (n_reflections,)
         n_steps: Number of optimization steps
-        step_size: Learning rate for Adam optimizer
+        step_size: Learning rate for optimizer
         batch_size: Number of reflections to use in batched gradient step
-        lambda_l1: L1 regularization strength in objective
-        lambda_l2: L2 regularization strength in objective
-        use_proximal: If True, use proximal gradient descent with soft thresholding after each step
-        proximal_lambda: Threshold value for soft thresholding (only used if use_proximal=True)
-        use_sigmoid: If True, use sigmoid parameterization (weights in [0,1]). If False, use softmax (weights sum to 1)
+        lambda_l1: L1 regularization strength
+        lambda_l2: L2 regularization strength
+        use_proximal: If True, use TRUE proximal gradient descent (gradient on smooth part only,
+                      then apply proximal operator for L1)
+        use_sigmoid: If True, use sigmoid parameterization (weights in [0,1]).
+                     If False, use raw parameterization (required for proximal)
         hard_threshold_final: If not None, apply hard thresholding at this value after optimization
 
     Returns:
@@ -141,29 +163,51 @@ def optimize_weights(
 
     # Initialize parameters
     if use_sigmoid:
+        if use_proximal:
+            raise ValueError("Cannot use proximal gradient with sigmoid parameterization. Set use_sigmoid=False.")
         u = jnp.full((n_timepoints,), -jax.numpy.log(n_timepoints - 1))
         transform_fn = jax.nn.sigmoid
     else:
-        # Use softmax parameterization - weights sum to 1 and can go to 0
-        u = jnp.zeros((n_timepoints,))
-
-        def transform_fn(x):
-            return jax.nn.softmax(x)
+        # Direct parameterization - weights are the parameters
+        # Initialize to uniform
+        u = jnp.ones((n_timepoints,)) / n_timepoints
+        transform_fn = lambda x: x  # Identity
 
     print("Initial weights:", transform_fn(u))
-    print("Initial CC:", objective(transform_fn(u), F_array, y, lambda_l1, lambda_l2))
+
+    # For proximal, evaluate on smooth objective; for regular, use full objective
+    if use_proximal:
+        initial_obj = smooth_objective(transform_fn(u), F_array, y, lambda_l2)
+        print(f"Initial smooth objective: {initial_obj:.6f}")
+    else:
+        initial_obj = objective(transform_fn(u), F_array, y, lambda_l1, lambda_l2)
+        print(f"Initial objective: {initial_obj:.6f}")
 
     optimizer = adam(step_size)
     params = {"u": u}
     opt_state = optimizer.init(params)
 
-    grad_fn = jit(
-        grad(
-            lambda params, F_array, y: -objective(
-                transform_fn(params["u"]), F_array, y, lambda_l1, lambda_l2
+    # Create gradient function based on whether we're using proximal or not
+    if use_proximal:
+        # TRUE PROXIMAL: gradient of smooth part only (no L1)
+        grad_fn = jit(
+            grad(
+                lambda params, F_array, y: -smooth_objective(
+                    params["u"], F_array, y, lambda_l2
+                )
             )
         )
-    )
+        print("Using TRUE proximal gradient descent (gradient on smooth objective only)")
+    else:
+        # REGULAR: gradient of full objective (including L1)
+        grad_fn = jit(
+            grad(
+                lambda params, F_array, y: -objective(
+                    transform_fn(params["u"]), F_array, y, lambda_l1, lambda_l2
+                )
+            )
+        )
+        print("Using standard gradient descent (gradient on full objective)")
 
     last_cc = -jnp.inf
 
@@ -173,10 +217,11 @@ def optimize_weights(
         updates, opt_state = optimizer.update(g, opt_state)
         params = apply_updates(params, updates)
 
-        # Apply proximal operator (soft thresholding) if requested
-        if use_proximal and not use_sigmoid:
-            # Only apply proximal operator when using unconstrained parameterization
-            params["u"] = soft_threshold(params["u"], proximal_lambda)
+        # TRUE PROXIMAL: Apply proximal operator for L1 with proper scaling
+        if use_proximal:
+            # The proximal operator accounts for the L1 penalty
+            # Scaling by step_size is crucial for convergence
+            params["u"] = soft_threshold(params["u"], step_size * lambda_l1)
 
         # Batched gradient step
         batch_key = jax.random.fold_in(key, step)
@@ -192,16 +237,155 @@ def optimize_weights(
         params = apply_updates(params, updates)
 
         # Apply proximal operator again after batch step
-        if use_proximal and not use_sigmoid:
-            params["u"] = soft_threshold(params["u"], proximal_lambda)
+        if use_proximal:
+            params["u"] = soft_threshold(params["u"], step_size * lambda_l1)
 
         # Logging and convergence check
         if step % 10 == 0:
             w = transform_fn(params["u"])
+            # Always evaluate on full objective for comparison
             cc = objective(w, F_array, y, lambda_l1, lambda_l2)
             n_nonzero = jnp.sum(w > 1e-6)
+            n_zero = jnp.sum(w == 0)
             print(
-                f"Step {step}: Objective = {cc:.6f}, Non-zero weights: {n_nonzero}/{n_timepoints}"
+                f"Step {step}: Objective = {cc:.6f}, Exact zeros: {n_zero}/{n_timepoints}, Non-zero: {n_nonzero}/{n_timepoints}"
+            )
+
+            if jnp.allclose(cc, last_cc, atol=1e-5):
+                print(f"Converged at step {step}")
+                break
+            last_cc = cc
+
+    w = transform_fn(params["u"])
+
+    # Apply hard thresholding if requested
+    if hard_threshold_final is not None:
+        print(f"Applying hard threshold at {hard_threshold_final}")
+        w_before = w
+        w = hard_threshold(w, hard_threshold_final)
+        n_zeroed = jnp.sum((w_before > 0) & (w == 0))
+        print(f"Set {n_zeroed} weights to exactly 0")
+
+    return w
+
+
+def optimize_weights_batched_hkl(
+    datasets_cpu,
+    y_cpu,
+    n_steps,
+    step_size,
+    hkl_batch_size=10000,
+    lambda_l1=0.0,
+    lambda_l2=0.0,
+    use_proximal=False,
+    use_sigmoid=True,
+    hard_threshold_final=None,
+):
+    """
+    Optimize weights with batched HKL loading to reduce GPU memory usage.
+    Instead of loading all data to GPU at once, randomly sample HKLs each step.
+
+    Args:
+        datasets_cpu: List of numpy arrays (one per MTZ), kept in CPU memory
+        y_cpu: Ground truth intensities in CPU memory
+        n_steps: Number of optimization steps
+        step_size: Learning rate for optimizer
+        hkl_batch_size: Number of HKLs to load to GPU per step
+        lambda_l1: L1 regularization strength
+        lambda_l2: L2 regularization strength
+        use_proximal: If True, use TRUE proximal gradient descent
+        use_sigmoid: If True, use sigmoid parameterization.
+                     If False, use raw parameterization (required for proximal)
+        hard_threshold_final: If not None, apply hard thresholding at this value after optimization
+
+    Returns:
+        Optimized weights
+    """
+    n_timepoints = len(datasets_cpu)
+    n_reflections = y_cpu.shape[0]
+
+    print(f"Batched HKL optimization:")
+    print(f"  Total reflections: {n_reflections}")
+    print(f"  HKL batch size: {hkl_batch_size}")
+    print(f"  Datasets: {n_timepoints}")
+
+    # Initialize parameters
+    if use_sigmoid:
+        if use_proximal:
+            raise ValueError("Cannot use proximal gradient with sigmoid parameterization. Set use_sigmoid=False.")
+        u = jnp.full((n_timepoints,), -jax.numpy.log(n_timepoints - 1))
+        transform_fn = jax.nn.sigmoid
+    else:
+        # Direct parameterization
+        u = jnp.ones((n_timepoints,)) / n_timepoints
+        transform_fn = lambda x: x
+
+    print("Initial weights:", transform_fn(u))
+
+    optimizer = adam(step_size)
+    params = {"u": u}
+    opt_state = optimizer.init(params)
+
+    # Create gradient function
+    if use_proximal:
+        grad_fn = jit(
+            grad(
+                lambda params, F_array, y: -smooth_objective(
+                    params["u"], F_array, y, lambda_l2
+                )
+            )
+        )
+        print("Using TRUE proximal gradient descent (batched HKL)")
+    else:
+        grad_fn = jit(
+            grad(
+                lambda params, F_array, y: -objective(
+                    transform_fn(params["u"]), F_array, y, lambda_l1, lambda_l2
+                )
+            )
+        )
+        print("Using standard gradient descent (batched HKL)")
+
+    last_cc = -jnp.inf
+
+    # For evaluation, load a subset to GPU once
+    eval_batch_size = min(50000, n_reflections)
+    eval_indices = np.arange(eval_batch_size)
+    F_eval = jnp.stack([d[eval_indices] for d in datasets_cpu], axis=0)
+    y_eval = jnp.array(y_cpu[eval_indices])
+
+    for step in range(n_steps):
+        # Sample random batch of HKL indices
+        batch_key = jax.random.fold_in(key, step)
+        batch_indices = jax.random.choice(
+            batch_key, n_reflections, shape=(hkl_batch_size,), replace=False
+        )
+
+        # Convert to numpy for indexing
+        batch_indices_np = np.array(batch_indices)
+
+        # Load batch to GPU
+        F_batch = jnp.stack([d[batch_indices_np] for d in datasets_cpu], axis=0)
+        y_batch = jnp.array(y_cpu[batch_indices_np])
+
+        # Gradient step
+        g = grad_fn(params, F_batch, y_batch)
+        updates, opt_state = optimizer.update(g, opt_state)
+        params = apply_updates(params, updates)
+
+        # Apply proximal operator if requested
+        if use_proximal:
+            params["u"] = soft_threshold(params["u"], step_size * lambda_l1)
+
+        # Logging and convergence check
+        if step % 10 == 0:
+            w = transform_fn(params["u"])
+            # Evaluate on eval subset
+            cc = objective(w, F_eval, y_eval, lambda_l1, lambda_l2)
+            n_nonzero = jnp.sum(w > 1e-6)
+            n_zero = jnp.sum(w == 0)
+            print(
+                f"Step {step}: Objective = {cc:.6f}, Exact zeros: {n_zero}/{n_timepoints}, Non-zero: {n_nonzero}/{n_timepoints}"
             )
 
             if jnp.allclose(cc, last_cc, atol=1e-5):
@@ -255,6 +439,50 @@ def subsample_reflections(datasets, y, subsample_fraction=1.0, random_seed=42):
     subsampled_y = y[indices]
 
     return subsampled_datasets, subsampled_y
+
+
+def load_mtzs_cpu_only(mtz_files, nas, y, subsample_fraction=1.0):
+    """
+    Load MTZ files and keep them in CPU memory (for batched HKL loading).
+
+    Args:
+        mtz_files: List of MTZ file paths
+        nas: NaN mask from ground truth
+        y: Ground truth intensities
+        subsample_fraction: Fraction of reflections to keep
+
+    Returns:
+        datasets: List of numpy arrays (kept in CPU memory)
+        y: Ground truth intensities (potentially subsampled)
+    """
+    datasets = []
+
+    for mtz in mtz_files:
+        if "sqrtIdiffuse" in mtz:
+            continue
+        print("Reading:", mtz.split("/")[-1])
+        dataset = (
+            rs.read_mtz(mtz)
+            .expand_to_p1()[~nas.sqrtIdiff]
+            .to_structurefactor("FMODEL", "PHIFMODEL")
+            .to_numpy()
+        )
+        datasets.append(dataset)
+
+    if not datasets:
+        raise ValueError("No MTZ files loaded!")
+
+    if subsample_fraction < 1.0:
+        datasets, y = subsample_reflections(
+            datasets, y, subsample_fraction=subsample_fraction
+        )
+
+    print(f"Loaded {len(datasets)} datasets to CPU memory")
+    print(f"Reflection shape: {datasets[0].shape}")
+    total_size = sum(d.nbytes for d in datasets) / 1e9
+    print(f"Total data size: {total_size:.2f} GB (in CPU memory)")
+
+    return datasets, y
 
 
 def load_mtzs_with_sharding(
@@ -318,14 +546,20 @@ def load_mtzs_with_sharding(
 
 if __name__ == "__main__":
     # ========== CONFIGURATION ==========
-    # Memory reduction options
-    USE_SHARDING = True  # Set to True to use multi-GPU sharding
+    # Memory management strategy
+    USE_BATCHED_HKL = True  # If True, use batched HKL loading (keeps data in CPU, loads batches to GPU)
+                             # If False, load all data to GPU once (faster but uses more memory)
+
+    # Memory reduction options (only used if USE_BATCHED_HKL=False)
+    USE_SHARDING = False  # Set to True to use multi-GPU sharding
     SUBSAMPLE_FRACTION = 1.0  # Fraction of reflections to use (e.g., 0.5 = 50%)
 
+    # Batched HKL options (only used if USE_BATCHED_HKL=True)
+    HKL_BATCH_SIZE = 20000  # Number of HKLs to load to GPU per optimization step
+
     # Sparse optimization options
-    USE_PROXIMAL = True  # Set to True to use proximal gradient descent
-    PROXIMAL_LAMBDA = 0.01  # Soft threshold value for proximal operator
-    USE_SIGMOID = True  # If False, uses softmax (allows weights to reach 0)
+    USE_PROXIMAL = True  # Set to True to use TRUE proximal gradient descent
+    USE_SIGMOID = False  # Must be False for proximal (allows weights to reach 0)
     HARD_THRESHOLD_FINAL = (
         0.01  # Apply hard threshold after optimization (None to disable)
     )
@@ -337,16 +571,20 @@ if __name__ == "__main__":
     # Optimization parameters
     N_STEPS = 500
     STEP_SIZE = 0.05
-    BATCH_SIZE = 100000
+    BATCH_SIZE = 100000  # Only used if USE_BATCHED_HKL=False (batching within each opt step)
     # ===================================
 
     print("=" * 60)
     print("GPU CALCULATION OPTIMIZATION")
     print("=" * 60)
     print("Configuration:")
-    print(f"  Multi-GPU sharding: {USE_SHARDING}")
-    print(f"  Subsample fraction: {SUBSAMPLE_FRACTION}")
-    print(f"  Use proximal (soft threshold): {USE_PROXIMAL}")
+    print(f"  Memory strategy: {'Batched HKL loading' if USE_BATCHED_HKL else 'Full GPU loading'}")
+    if USE_BATCHED_HKL:
+        print(f"  HKL batch size: {HKL_BATCH_SIZE}")
+    else:
+        print(f"  Multi-GPU sharding: {USE_SHARDING}")
+        print(f"  Subsample fraction: {SUBSAMPLE_FRACTION}")
+    print(f"  Use proximal gradient: {USE_PROXIMAL}")
     print(f"  Use sigmoid parameterization: {USE_SIGMOID}")
     print(f"  Hard threshold final: {HARD_THRESHOLD_FINAL}")
     print(f"  L1 regularization: {LAMBDA_L1}")
@@ -369,36 +607,69 @@ if __name__ == "__main__":
     mtzs = glob.glob("diffUSE_CC_opt_test/*.mtz")
     mtz_files = [mtz for mtz in mtzs if "sqrtIdiffuse" not in mtz]
 
-    # Memory-efficient loading with optional sharding
-    F_array, y, mesh = load_mtzs_with_sharding(
-        mtz_files,
-        nas,
-        y,
-        use_sharding=USE_SHARDING,
-        subsample_fraction=1.0,  # Subsampling done separately for now
-    )
-
-    print("F_array shape:", F_array.shape)
-    print(f"F_array size: {F_array.nbytes / 1e9:.2f} GB")
-
     # Optimize weights with sparse optimization
     print("\n" + "=" * 60)
     print("Starting optimization...")
     print("=" * 60)
 
-    weights = optimize_weights(
-        F_array,
-        y,
-        n_steps=N_STEPS,
-        step_size=STEP_SIZE,
-        batch_size=BATCH_SIZE,
-        lambda_l1=LAMBDA_L1,
-        lambda_l2=LAMBDA_L2,
-        use_proximal=USE_PROXIMAL,
-        proximal_lambda=PROXIMAL_LAMBDA,
-        use_sigmoid=USE_SIGMOID,
-        hard_threshold_final=HARD_THRESHOLD_FINAL,
-    )
+    if USE_BATCHED_HKL:
+        # Load data to CPU memory only
+        datasets_cpu, y = load_mtzs_cpu_only(
+            mtz_files,
+            nas,
+            y,
+            subsample_fraction=SUBSAMPLE_FRACTION,
+        )
+
+        # Optimize with batched HKL loading
+        weights = optimize_weights_batched_hkl(
+            datasets_cpu,
+            y,
+            n_steps=N_STEPS,
+            step_size=STEP_SIZE,
+            hkl_batch_size=HKL_BATCH_SIZE,
+            lambda_l1=LAMBDA_L1,
+            lambda_l2=LAMBDA_L2,
+            use_proximal=USE_PROXIMAL,
+            use_sigmoid=USE_SIGMOID,
+            hard_threshold_final=HARD_THRESHOLD_FINAL,
+        )
+
+        # For final evaluation, load a subset to GPU
+        print("\nFinal evaluation...")
+        eval_size = min(50000, y.shape[0])
+        F_eval = jnp.stack([d[:eval_size] for d in datasets_cpu], axis=0)
+        y_eval = jnp.array(y[:eval_size])
+
+    else:
+        # Load all data to GPU (with optional sharding)
+        F_array, y, mesh = load_mtzs_with_sharding(
+            mtz_files,
+            nas,
+            y,
+            use_sharding=USE_SHARDING,
+            subsample_fraction=SUBSAMPLE_FRACTION,
+        )
+
+        print("F_array shape:", F_array.shape)
+        print(f"F_array size: {F_array.nbytes / 1e9:.2f} GB")
+
+        # Optimize with all data on GPU
+        weights = optimize_weights(
+            F_array,
+            y,
+            n_steps=N_STEPS,
+            step_size=STEP_SIZE,
+            batch_size=BATCH_SIZE,
+            lambda_l1=LAMBDA_L1,
+            lambda_l2=LAMBDA_L2,
+            use_proximal=USE_PROXIMAL,
+            use_sigmoid=USE_SIGMOID,
+            hard_threshold_final=HARD_THRESHOLD_FINAL,
+        )
+
+        F_eval = F_array
+        y_eval = y
 
     # Print results
     print("\n" + "=" * 60)
@@ -419,7 +690,10 @@ if __name__ == "__main__":
     print(f"  Mean weight: {jnp.mean(weights):.6f}")
     print(f"  Max weight: {jnp.max(weights):.6f}")
 
-    xprime = compute_xprime(weights, F_array)
-    final_cc = pearson_cc(xprime, y)
+    # Compute final correlation on evaluation data
+    xprime = compute_xprime(weights, F_eval)
+    final_cc = pearson_cc(xprime, y_eval)
     print(f"\nFinal Pearson CC: {final_cc:.6f}")
+    if USE_BATCHED_HKL:
+        print(f"  (evaluated on {eval_size} reflections)")
     print("=" * 60)
