@@ -54,7 +54,7 @@ def get_mesh_sharding(n_devices=None):
     Returns:
         Mesh object for sharding
     """
-    devices = jax.devices('gpu') if jax.devices('gpu') else jax.devices('cpu')
+    devices = jax.devices("gpu") if jax.devices("gpu") else jax.devices("cpu")
     if n_devices:
         devices = devices[:n_devices]
 
@@ -62,7 +62,7 @@ def get_mesh_sharding(n_devices=None):
 
     # Create 1D mesh along device axis
     mesh_devices = mesh_utils.create_device_mesh((len(devices),))
-    mesh = Mesh(mesh_devices, axis_names=('data',))
+    mesh = Mesh(mesh_devices, axis_names=("data",))
 
     return mesh
 
@@ -91,21 +91,32 @@ def compute_xprime(w, F_array):
     return xprime
 
 
-def objective(w, F_array, y, lambda_l1=0., lambda_l2=0.):
+def objective(w, F_array, y, lambda_l1=0.0, lambda_l2=0.0):
     xprime = compute_xprime(w, F_array)
     xprime_flat = xprime.flatten()
     y_flat = y.flatten()
 
     cc = pearson_cc(xprime_flat, y_flat)
 
-    l2_penalty = lambda_l2 * jnp.mean((w - 1.0)**2)
+    l2_penalty = lambda_l2 * jnp.mean((w - 1.0) ** 2)
     l1_penalty = lambda_l1 * jnp.mean(jnp.abs(w - 1.0))
-    
+
     return cc - l2_penalty - l1_penalty
 
 
-def optimize_weights(F_array, y, n_steps, step_size, batch_size=100000, lambda_l1=0., lambda_l2=0.,
-                     use_proximal=False, proximal_lambda=0.01, use_sigmoid=True, hard_threshold_final=None):
+def optimize_weights(
+    F_array,
+    y,
+    n_steps,
+    step_size,
+    batch_size=100000,
+    lambda_l1=0.0,
+    lambda_l2=0.0,
+    use_proximal=False,
+    proximal_lambda=0.01,
+    use_sigmoid=True,
+    hard_threshold_final=None,
+):
     """
     Optimize weights for dataset combination.
 
@@ -135,7 +146,9 @@ def optimize_weights(F_array, y, n_steps, step_size, batch_size=100000, lambda_l
     else:
         # Use softmax parameterization - weights sum to 1 and can go to 0
         u = jnp.zeros((n_timepoints,))
-        transform_fn = lambda x: jax.nn.softmax(x)
+
+        def transform_fn(x):
+            return jax.nn.softmax(x)
 
     print("Initial weights:", transform_fn(u))
     print("Initial CC:", objective(transform_fn(u), F_array, y, lambda_l1, lambda_l2))
@@ -167,7 +180,9 @@ def optimize_weights(F_array, y, n_steps, step_size, batch_size=100000, lambda_l
 
         # Batched gradient step
         batch_key = jax.random.fold_in(key, step)
-        batch_indices = jax.random.choice(batch_key, n_reflections, shape=(batch_size,), replace=False)
+        batch_indices = jax.random.choice(
+            batch_key, n_reflections, shape=(batch_size,), replace=False
+        )
 
         F_batch = F_array[:, batch_indices]
         y_batch = y[batch_indices]
@@ -185,7 +200,9 @@ def optimize_weights(F_array, y, n_steps, step_size, batch_size=100000, lambda_l
             w = transform_fn(params["u"])
             cc = objective(w, F_array, y, lambda_l1, lambda_l2)
             n_nonzero = jnp.sum(w > 1e-6)
-            print(f"Step {step}: Objective = {cc:.6f}, Non-zero weights: {n_nonzero}/{n_timepoints}")
+            print(
+                f"Step {step}: Objective = {cc:.6f}, Non-zero weights: {n_nonzero}/{n_timepoints}"
+            )
 
             if jnp.allclose(cc, last_cc, atol=1e-5):
                 print(f"Converged at step {step}")
@@ -225,7 +242,9 @@ def subsample_reflections(datasets, y, subsample_fraction=1.0, random_seed=42):
     n_reflections = y.shape[0]
     n_keep = int(n_reflections * subsample_fraction)
 
-    print(f"Subsampling reflections: {n_reflections} -> {n_keep} ({subsample_fraction*100:.1f}%)")
+    print(
+        f"Subsampling reflections: {n_reflections} -> {n_keep} ({subsample_fraction * 100:.1f}%)"
+    )
 
     # Use numpy for reproducible random sampling
     rng = np.random.RandomState(random_seed)
@@ -238,18 +257,22 @@ def subsample_reflections(datasets, y, subsample_fraction=1.0, random_seed=42):
     return subsampled_datasets, subsampled_y
 
 
-def load_mtzs_with_sharding(mtz_files, nas, use_sharding=False, subsample_fraction=1.0):
+def load_mtzs_with_sharding(
+    mtz_files, nas, y, use_sharding=False, subsample_fraction=1.0
+):
     """
     Load MTZ files with optional sharding across GPUs and subsampling.
 
     Args:
         mtz_files: List of MTZ file paths
         nas: NaN mask from ground truth
+        y: Ground truth intensities
         use_sharding: If True, shard data across available GPUs
         subsample_fraction: Fraction of reflections to keep
 
     Returns:
-        F_array: Stacked structure factor array (potentially sharded)
+        F_array: Stacked structure factor array (potentially subsampled and sharded)
+        y: Ground truth intensities (potentially subsampled)
         mesh: Sharding mesh (None if use_sharding=False)
     """
     datasets = []
@@ -269,39 +292,43 @@ def load_mtzs_with_sharding(mtz_files, nas, use_sharding=False, subsample_fracti
     if not datasets:
         raise ValueError("No MTZ files loaded!")
 
-    # Convert to JAX arrays before stacking to control memory
-    print(f"Converting {len(datasets)} datasets to JAX arrays...")
+    if subsample_fraction < 1.0:
+        # Convert F_array back to list for subsampling
+        datasets, y = subsample_reflections(
+            datasets, y, subsample_fraction=subsample_fraction
+        )
+
+    F_array = jnp.stack(datasets, axis=0)
+    print(f"F_array shape: {F_array.shape}")
+    print(f"F_array size: {F_array.nbytes / 1e9:.2f} GB")
 
     if use_sharding:
         mesh = get_mesh_sharding()
 
         # Create sharding specification: shard along dataset axis
-        sharding = NamedSharding(mesh, PartitionSpec('data', None))
-
-        # Stack datasets in numpy first (cheaper memory), then convert to jax with sharding
-        datasets_np = np.stack(datasets, axis=0)
-        F_array = jax.device_put(datasets_np, sharding)
+        sharding = NamedSharding(mesh, PartitionSpec("data", None))
+        F_array = jax.device_put(F_array, sharding)
 
         print(f"Data sharded across devices: {F_array.sharding}")
     else:
-        # Standard stacking
-        F_array = jnp.stack(datasets, axis=0)
         mesh = None
 
-    return F_array, mesh
+    return F_array, y, mesh
 
 
 if __name__ == "__main__":
     # ========== CONFIGURATION ==========
     # Memory reduction options
-    USE_SHARDING = False  # Set to True to use multi-GPU sharding
+    USE_SHARDING = True  # Set to True to use multi-GPU sharding
     SUBSAMPLE_FRACTION = 1.0  # Fraction of reflections to use (e.g., 0.5 = 50%)
 
     # Sparse optimization options
-    USE_PROXIMAL = False  # Set to True to use proximal gradient descent
+    USE_PROXIMAL = True  # Set to True to use proximal gradient descent
     PROXIMAL_LAMBDA = 0.01  # Soft threshold value for proximal operator
-    USE_SIGMOID = False  # If False, uses softmax (allows weights to reach 0)
-    HARD_THRESHOLD_FINAL = 0.01  # Apply hard threshold after optimization (None to disable)
+    USE_SIGMOID = True  # If False, uses softmax (allows weights to reach 0)
+    HARD_THRESHOLD_FINAL = (
+        0.01  # Apply hard threshold after optimization (None to disable)
+    )
 
     # Regularization
     LAMBDA_L1 = 0.1  # L1 regularization strength
@@ -316,7 +343,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print("GPU CALCULATION OPTIMIZATION")
     print("=" * 60)
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  Multi-GPU sharding: {USE_SHARDING}")
     print(f"  Subsample fraction: {SUBSAMPLE_FRACTION}")
     print(f"  Use proximal (soft threshold): {USE_PROXIMAL}")
@@ -343,24 +370,16 @@ if __name__ == "__main__":
     mtz_files = [mtz for mtz in mtzs if "sqrtIdiffuse" not in mtz]
 
     # Memory-efficient loading with optional sharding
-    F_array, mesh = load_mtzs_with_sharding(
+    F_array, y, mesh = load_mtzs_with_sharding(
         mtz_files,
         nas,
+        y,
         use_sharding=USE_SHARDING,
-        subsample_fraction=1.0  # Subsampling done separately for now
+        subsample_fraction=1.0,  # Subsampling done separately for now
     )
 
     print("F_array shape:", F_array.shape)
     print(f"F_array size: {F_array.nbytes / 1e9:.2f} GB")
-
-    # Optional: Subsample reflections to reduce memory
-    if SUBSAMPLE_FRACTION < 1.0:
-        # Convert F_array back to list for subsampling
-        datasets_list = [F_array[i] for i in range(F_array.shape[0])]
-        datasets_list, y = subsample_reflections(datasets_list, y, SUBSAMPLE_FRACTION)
-        F_array = jnp.stack(datasets_list, axis=0)
-        print(f"After subsampling - F_array shape: {F_array.shape}")
-        print(f"After subsampling - F_array size: {F_array.nbytes / 1e9:.2f} GB")
 
     # Optimize weights with sparse optimization
     print("\n" + "=" * 60)
@@ -368,7 +387,8 @@ if __name__ == "__main__":
     print("=" * 60)
 
     weights = optimize_weights(
-        F_array, y,
+        F_array,
+        y,
         n_steps=N_STEPS,
         step_size=STEP_SIZE,
         batch_size=BATCH_SIZE,
@@ -377,7 +397,7 @@ if __name__ == "__main__":
         use_proximal=USE_PROXIMAL,
         proximal_lambda=PROXIMAL_LAMBDA,
         use_sigmoid=USE_SIGMOID,
-        hard_threshold_final=HARD_THRESHOLD_FINAL
+        hard_threshold_final=HARD_THRESHOLD_FINAL,
     )
 
     # Print results
@@ -392,7 +412,7 @@ if __name__ == "__main__":
 
     n_zero = jnp.sum(weights == 0)
     n_near_zero = jnp.sum((weights > 0) & (weights < 0.01))
-    print(f"\nWeight statistics:")
+    print("\nWeight statistics:")
     print(f"  Exactly zero: {n_zero}/{len(weights)}")
     print(f"  Near zero (<0.01): {n_near_zero}/{len(weights)}")
     print(f"  Non-zero (>=0.01): {jnp.sum(weights >= 0.01)}/{len(weights)}")
