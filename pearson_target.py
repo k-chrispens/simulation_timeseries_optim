@@ -417,7 +417,7 @@ def subsample_reflections(datasets, y, subsample_fraction=1.0, random_seed=42):
     return subsampled_datasets, subsampled_y
 
 
-def load_mtzs_cpu_only(mtz_files, valid_indices, y, subsample_fraction=1.0):
+def load_mtzs_cpu_only(mtz_files, valid_indices, y, labels="FMODEL,PHIFMODEL", subsample_fraction=1.0):
     datasets = []
 
     for mtz in mtz_files:
@@ -428,7 +428,7 @@ def load_mtzs_cpu_only(mtz_files, valid_indices, y, subsample_fraction=1.0):
             rs.read_mtz(mtz)
             .expand_to_p1()
             .loc[valid_indices]
-            .to_structurefactor("FMODEL", "PHIFMODEL")
+            .to_structurefactor(*labels.split(","))
             .to_numpy()
         )
         datasets.append(dataset)
@@ -450,7 +450,7 @@ def load_mtzs_cpu_only(mtz_files, valid_indices, y, subsample_fraction=1.0):
 
 
 def load_mtzs_with_sharding(
-    mtz_files, valid_indices, y, use_sharding=False, subsample_fraction=1.0
+    mtz_files, valid_indices, y, labels="FMODEL,PHIFMODEL", use_sharding=False, subsample_fraction=1.0
 ):
     datasets = []
 
@@ -462,7 +462,7 @@ def load_mtzs_with_sharding(
             rs.read_mtz(mtz)
             .expand_to_p1()
             .loc[valid_indices]
-            .to_structurefactor("FMODEL", "PHIFMODEL")
+            .to_structurefactor(*labels.split(","))
             .to_numpy()
         )
         datasets.append(dataset)
@@ -551,6 +551,7 @@ if __name__ == "__main__":
             mtz_files,
             valid_indices,
             y,
+            labels="FC,PHIC",
             subsample_fraction=SUBSAMPLE_FRACTION,
         )
 
@@ -578,6 +579,7 @@ if __name__ == "__main__":
             mtz_files,
             valid_indices,
             y,
+            labels="FC,PHIC",
             use_sharding=USE_SHARDING,
             subsample_fraction=SUBSAMPLE_FRACTION,
         )
