@@ -280,27 +280,8 @@ def optimize_weights_batched_hkl(
     use_proximal=False,
     use_sigmoid=True,
     hard_threshold_final=None,
+    use_sharding=False,
 ):
-    """
-    Optimize weights with batched HKL loading to reduce GPU memory usage.
-    Instead of loading all data to GPU at once, randomly sample HKLs each step.
-
-    Args:
-        datasets_cpu: List of numpy arrays (one per MTZ), kept in system memory
-        y_cpu: Ground truth intensities in system memory
-        n_steps: Number of optimization steps
-        step_size: Learning rate for optimizer
-        hkl_batch_size: Number of HKLs to load to GPU per step
-        lambda_l1: L1 regularization strength
-        lambda_l2: L2 regularization strength
-        use_proximal: If True, use TRUE proximal gradient descent
-        use_sigmoid: If True, use sigmoid parameterization.
-                     If False, use raw parameterization (required for proximal)
-        hard_threshold_final: If not None, apply hard thresholding at this value after optimization
-
-    Returns:
-        Optimized weights
-    """
     n_timepoints = len(datasets_cpu)
     n_reflections = y_cpu.shape[0]
 
@@ -308,6 +289,13 @@ def optimize_weights_batched_hkl(
     print(f"  Total reflections: {n_reflections}")
     print(f"  HKL batch size: {hkl_batch_size}")
     print(f"  Datasets: {n_timepoints}")
+    print(f"  Multi-GPU sharding: {use_sharding}")
+
+    mesh = None
+    sharding_spec = None
+    if use_sharding:
+        mesh = get_mesh_sharding()
+        sharding_spec = NamedSharding(mesh, PartitionSpec("data", None))
 
     # Initialize parameters
     if use_sigmoid:
@@ -349,24 +337,28 @@ def optimize_weights_batched_hkl(
 
     last_cc = -jnp.inf
 
-    # For evaluation, load a subset to GPU once
     eval_batch_size = min(50000, n_reflections)
     eval_indices = np.arange(eval_batch_size)
-    F_eval = jnp.stack([d[eval_indices] for d in datasets_cpu], axis=0)
+    F_eval_np = np.stack([d[eval_indices] for d in datasets_cpu], axis=0)
+    if use_sharding:
+        F_eval = jax.device_put(F_eval_np, sharding_spec)
+    else:
+        F_eval = jnp.array(F_eval_np)
     y_eval = jnp.array(y_cpu[eval_indices])
 
     for step in range(n_steps):
-        # Sample random batch of HKL indices
         batch_key = jax.random.fold_in(key, step)
         batch_indices = jax.random.choice(
             batch_key, n_reflections, shape=(hkl_batch_size,), replace=False
         )
 
-        # Convert to numpy for indexing
         batch_indices_np = np.array(batch_indices)
 
-        # Load batch to GPU
-        F_batch = jnp.stack([d[batch_indices_np] for d in datasets_cpu], axis=0)
+        F_batch_np = np.stack([d[batch_indices_np] for d in datasets_cpu], axis=0)
+        if use_sharding:
+            F_batch = jax.device_put(F_batch_np, sharding_spec)
+        else:
+            F_batch = jnp.array(F_batch_np)
         y_batch = jnp.array(y_cpu[batch_indices_np])
 
         # Gradient step
@@ -547,49 +539,34 @@ def load_mtzs_with_sharding(
 
 if __name__ == "__main__":
     # ========== CONFIGURATION ==========
-    # Memory management strategy
-    USE_BATCHED_HKL = True  # If True, use batched HKL loading (keeps data in CPU, loads batches to GPU)
-                             # If False, load all data to GPU once (faster but uses more memory)
+    USE_BATCHED_HKL = True
+    USE_SHARDING = True
+    SUBSAMPLE_FRACTION = 1.0
+    HKL_BATCH_SIZE = 20000
 
-    # Memory reduction options (only used if USE_BATCHED_HKL=False)
-    USE_SHARDING = True  # Set to True to use multi-GPU sharding
-    SUBSAMPLE_FRACTION = 1.0  # Fraction of reflections to use (e.g., 0.5 = 50%)
-
-    # Batched HKL options (only used if USE_BATCHED_HKL=True)
-    HKL_BATCH_SIZE = 20000  # Number of HKLs to load to GPU per optimization step
-
-    # Sparse optimization options
-    USE_PROXIMAL = True  # Set to True to use proximal gradient descent
+    USE_PROXIMAL = True
     USE_SIGMOID = False
-    HARD_THRESHOLD_FINAL = (
-        0.01  # Apply hard threshold after optimization (None to disable)
-    )
+    HARD_THRESHOLD_FINAL = 0.01
 
-    # Regularization
-    LAMBDA_L1 = 0.1  # L1 regularization strength
-    LAMBDA_L2 = 0.0  # L2 regularization strength
+    LAMBDA_L1 = 0.1
+    LAMBDA_L2 = 0.0
 
-    # Optimization parameters
     N_STEPS = 500
     STEP_SIZE = 0.05
-    BATCH_SIZE = 100000  # Only used if USE_BATCHED_HKL=False (batching within each opt step)
-    # ===================================
+    BATCH_SIZE = 100000
 
     print("=" * 60)
     print("GPU CALCULATION OPTIMIZATION")
     print("=" * 60)
     print("Configuration:")
-    print(f"  Memory strategy: {'Batched HKL loading' if USE_BATCHED_HKL else 'Full GPU loading'}")
+    print(f"  Memory strategy: {'Batched HKL' if USE_BATCHED_HKL else 'Full GPU'}")
+    print(f"  Multi-GPU sharding: {USE_SHARDING}")
     if USE_BATCHED_HKL:
         print(f"  HKL batch size: {HKL_BATCH_SIZE}")
     else:
-        print(f"  Multi-GPU sharding: {USE_SHARDING}")
         print(f"  Subsample fraction: {SUBSAMPLE_FRACTION}")
-    print(f"  Use proximal gradient: {USE_PROXIMAL}")
-    print(f"  Use sigmoid parameterization: {USE_SIGMOID}")
-    print(f"  Hard threshold final: {HARD_THRESHOLD_FINAL}")
-    print(f"  L1 regularization: {LAMBDA_L1}")
-    print(f"  L2 regularization: {LAMBDA_L2}")
+    print(f"  Proximal gradient: {USE_PROXIMAL}")
+    print(f"  L1: {LAMBDA_L1}, L2: {LAMBDA_L2}")
     print("=" * 60)
 
     # Load ground truth
@@ -614,7 +591,6 @@ if __name__ == "__main__":
     print("=" * 60)
 
     if USE_BATCHED_HKL:
-        # Load data to system memory only
         datasets_cpu, y = load_mtzs_cpu_only(
             mtz_files,
             nas,
@@ -622,7 +598,6 @@ if __name__ == "__main__":
             subsample_fraction=SUBSAMPLE_FRACTION,
         )
 
-        # Optimize with batched HKL loading
         weights = optimize_weights_batched_hkl(
             datasets_cpu,
             y,
@@ -634,16 +609,15 @@ if __name__ == "__main__":
             use_proximal=USE_PROXIMAL,
             use_sigmoid=USE_SIGMOID,
             hard_threshold_final=HARD_THRESHOLD_FINAL,
+            use_sharding=USE_SHARDING,
         )
 
-        # For final evaluation, load a subset to GPU so we don't run out of memory again
         print("\nFinal evaluation...")
         eval_size = min(50000, y.shape[0])
         F_eval = jnp.stack([d[:eval_size] for d in datasets_cpu], axis=0)
         y_eval = jnp.array(y[:eval_size])
 
     else:
-        # Load all data to GPU (with optional sharding)
         F_array, y, mesh = load_mtzs_with_sharding(
             mtz_files,
             nas,
@@ -655,7 +629,6 @@ if __name__ == "__main__":
         print("F_array shape:", F_array.shape)
         print(f"F_array size: {F_array.nbytes / 1e9:.2f} GB")
 
-        # Optimize with all data on GPU
         weights = optimize_weights(
             F_array,
             y,
