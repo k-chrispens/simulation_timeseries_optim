@@ -219,9 +219,8 @@ def optimize_weights(
 
         # TRUE PROXIMAL: Apply proximal operator for L1 with proper scaling
         if use_proximal:
-            # The proximal operator accounts for the L1 penalty
-            # Scaling by step_size is crucial for convergence
             params["u"] = soft_threshold(params["u"], step_size * lambda_l1)
+            params["u"] = jnp.maximum(params["u"], 0.0)
 
         # Logging and convergence check
         if step % 10 == 0:
@@ -352,6 +351,7 @@ def optimize_weights_batched_hkl(
         # Apply proximal operator if requested
         if use_proximal:
             params["u"] = soft_threshold(params["u"], step_size * lambda_l1)
+            params["u"] = jnp.maximum(params["u"], 0.0)
 
         # Logging and convergence check
         if step % 10 == 0:
