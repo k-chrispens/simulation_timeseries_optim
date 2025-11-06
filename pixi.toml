@@ -16,6 +16,7 @@ jax = ">=0.7.2,<0.8"
 optax = ">=0.2.6,<0.3"
 reciprocalspaceship = "*"
 setuptools = "*"
+pyarrow = "*"
 
 [environments]
 gpu = ["gpu"]
