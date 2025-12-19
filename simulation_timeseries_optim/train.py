@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from typing import cast
 
 import equinox as eqx
@@ -48,59 +47,6 @@ def loss_fn(
         loss += lambda_l1 * jnp.mean(jnp.abs(weights - 1.0))
 
     return loss
-
-
-def make_step_fn(
-    optimizer: optax.GradientTransformation,
-    lambda_l1: float,
-    lambda_l2: float,
-    use_proximal: bool,
-) -> Callable:
-    """
-    Creates a training step function.
-    """
-
-    @eqx.filter_jit
-    def step(
-        model: Weights,
-        opt_state: optax.OptState,
-        F_array: Complex[Array, " time hkl"],
-        y: Float[Array, " hkl"],
-    ) -> tuple[Weights, optax.OptState, ArrayLike]:
-        # Calculate gradients
-        loss_value, grads = eqx.filter_value_and_grad(loss_fn)(
-            model, F_array, y, lambda_l1, lambda_l2, use_proximal
-        )
-
-        # Apply updates
-        updates, opt_state = optimizer.update(
-            grads, opt_state, cast(optax.Params, model)
-        )
-        model = eqx.apply_updates(model, updates)
-
-        # Apply proximal operator if needed
-        if use_proximal:
-            # We need to access the raw parameters.
-            # Since Weights is an Equinox module, we can modify its params directly if
-            # we know the structure.
-            # However, Equinox modules are immutable. We need to return a new model.
-            # The 'params' field in Weights is what we want to threshold.
-
-            # Note: The learning rate is needed for the threshold.
-            # Assuming constant learning rate for now or extracting from optimizer state
-            # if possible.
-            # For simplicity, we'll assume the user passes the effective threshold
-            # (lr * lambda).
-            # But optax schedules make this hard.
-            # A common pattern is to pass the learning rate explicitly or handle it
-            # outside.
-            # For this refactor, let's assume a fixed step size for the proximal part or
-            # pass it in.
-            pass
-
-        return model, opt_state, loss_value
-
-    return step
 
 
 def train(

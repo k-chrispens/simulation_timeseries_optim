@@ -43,6 +43,43 @@ def main():
         help="Parameterization method",
     )
 
+    # Iterative dropping arguments
+    parser.add_argument(
+        "--iterative",
+        action="store_true",
+        help="Enable iterative MTZ dropping mode",
+    )
+    parser.add_argument(
+        "--drop-percentile",
+        type=float,
+        default=10.0,
+        help="Percentile threshold for dropping (drop bottom X%%)",
+    )
+    parser.add_argument(
+        "--min-mtz",
+        type=int,
+        default=50,
+        help="Minimum number of MTZs to retain",
+    )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=10,
+        help="Maximum number of dropping iterations",
+    )
+    parser.add_argument(
+        "--min-weight",
+        type=float,
+        default=0.0,
+        help="Absolute minimum weight threshold for dropping",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="output",
+        help="Directory for output files and plots",
+    )
+
     args = parser.parse_args()
 
     logger.info("=" * 60)
@@ -69,42 +106,82 @@ def main():
         logger.error("No files found!")
         return
 
-    # For demonstration, we load all. In production, might want to batch or shard.
-    # The original code handled sharding. JAX handles sharding automatically if
-    # arrays are sharded.
-    # Here we load into memory.
     F_array = load_datasets(files, valid_indices, labels="FC,PHIC")
     logger.info(f"F_array shape: {F_array.shape}")
 
-    # Initialize Model
-    n_timepoints = F_array.shape[0]
-    model = Weights(n_timepoints, method=args.method)
+    if args.iterative:
+        # Iterative MTZ dropping mode
+        from simulation_timeseries_optim.dropping import run_iterative_optimization
+        from simulation_timeseries_optim.state import DropConfig
+        from simulation_timeseries_optim.visualization import (
+            save_final_weights_plot,
+        )
 
-    # Train
-    logger.info("Starting optimization...")
-    final_model, losses = train(
-        model,
-        F_array,
-        y,
-        n_steps=args.n_steps,
-        learning_rate=args.lr,
-        lambda_l1=args.l1,
-        lambda_l2=args.l2,
-        use_proximal=args.proximal,
-    )
+        config = DropConfig(
+            percentile_threshold=args.drop_percentile,
+            min_mtz_count=args.min_mtz,
+            max_rounds=args.max_rounds,
+            min_weight_threshold=args.min_weight,
+        )
 
-    # Results
-    final_weights = final_model()
-    logger.info("=" * 60)
-    logger.info("RESULTS")
-    logger.info("=" * 60)
-    logger.info(f"Final Loss: {losses[-1]:.6f}")
+        history = run_iterative_optimization(
+            F_array=F_array,
+            y=y,
+            mtz_files=files,
+            n_steps=args.n_steps,
+            learning_rate=args.lr,
+            lambda_l1=args.l1,
+            lambda_l2=args.l2,
+            use_proximal=args.proximal,
+            method=args.method,
+            config=config,
+            output_dir=args.output_dir,
+        )
 
-    logger.info("Weight statistics:")
-    logger.info(f"  Mean: {jnp.mean(final_weights):.6f}")
-    logger.info(f"  Max: {jnp.max(final_weights):.6f}")
-    logger.info(f"  Sparsity (exact 0): {jnp.sum(final_weights == 0)}/{n_timepoints}")
-    logger.info(f"  Sparsity (< 0.01): {jnp.sum(final_weights < 0.01)}/{n_timepoints}")
+        # Save final weights plot
+        final_weights = history.get_final_weights()
+        if final_weights is not None:
+            active_files = history.get_active_files()
+            save_final_weights_plot(final_weights, active_files, args.output_dir)
+
+        # Report retained files
+        logger.info("Retained MTZ files:")
+        for f in history.get_active_files():
+            logger.info(f"  {f}")
+
+    else:
+        # Original single-run mode
+        n_timepoints = F_array.shape[0]
+        model = Weights(n_timepoints, method=args.method)
+
+        logger.info("Starting optimization...")
+        final_model, losses = train(
+            model,
+            F_array,
+            y,
+            n_steps=args.n_steps,
+            learning_rate=args.lr,
+            lambda_l1=args.l1,
+            lambda_l2=args.l2,
+            use_proximal=args.proximal,
+        )
+
+        # Results
+        final_weights = final_model()
+        logger.info("=" * 60)
+        logger.info("RESULTS")
+        logger.info("=" * 60)
+        logger.info(f"Final Loss: {losses[-1]:.6f}")
+
+        logger.info("Weight statistics:")
+        logger.info(f"  Mean: {jnp.mean(final_weights):.6f}")
+        logger.info(f"  Max: {jnp.max(final_weights):.6f}")
+        logger.info(
+            f"  Sparsity (exact 0): {jnp.sum(final_weights == 0)}/{n_timepoints}"
+        )
+        logger.info(
+            f"  Sparsity (< 0.01): {jnp.sum(final_weights < 0.01)}/{n_timepoints}"
+        )
 
 
 if __name__ == "__main__":

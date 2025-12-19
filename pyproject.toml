@@ -16,12 +16,16 @@ dependencies = [
     "pytest",
     "typeguard",
     "loguru",
+    "matplotlib",
 ]
 readme = "README.md"
 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["simulation_timeseries_optim"]
 
 [tool.pixi.workspace]
 channels = ["nvidia", "conda-forge"]
@@ -48,3 +52,7 @@ gpu = { features = ["gpu"], solve-group = "default" }
 fixable = ["I001", "F401", "UP"]
 ignore = ["E402", "E721", "E731", "E741", "F722"]
 select = ["E", "F", "I001", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
