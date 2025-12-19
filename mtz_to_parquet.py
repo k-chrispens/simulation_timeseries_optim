@@ -1,9 +1,12 @@
 from __future__ import annotations
+
 import argparse
 import glob
 from pathlib import Path
+
 import pandas as pd
 import reciprocalspaceship as rs
+from loguru import logger
 
 
 def load_structure_factors(path: str, amp_label: str, phase_label: str) -> pd.DataFrame:
@@ -53,7 +56,7 @@ def main() -> None:
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stacked.to_parquet(output_path, index=False)
-    print(f"Wrote {len(stacked)} rows to {output_path}")
+    logger.info(f"Wrote {len(stacked)} rows to {output_path}")
 
 
 if __name__ == "__main__":

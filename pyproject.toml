@@ -1,0 +1,50 @@
+[project]
+name = "simulation-timeseries-optim"
+version = "0.1.0"
+description = "Optimization of weights for diffuse scattering using time series data"
+authors = [
+    {name = "Karson Chrispens", email = "karson.chrispens@ucsf.edu"}
+]
+requires-python = ">=3.9,<3.14"
+dependencies = [
+    "reciprocalspaceship==1.0.6",
+    "setuptools",
+    "pyarrow",
+    "pandas",
+    "equinox",
+    "jaxtyping",
+    "pytest",
+    "typeguard",
+    "loguru",
+]
+readme = "README.md"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pixi.workspace]
+channels = ["nvidia", "conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+[tool.pixi.feature.gpu.system-requirements]
+cuda = "12"
+
+[tool.pixi.tasks]
+
+[tool.pixi.dependencies]
+python = ">=3.9,<3.14"
+jax = ">=0.7.2,<0.8"
+optax = ">=0.2.6,<0.3"
+
+[tool.pixi.pypi-dependencies]
+simulation-timeseries-optim = { path = ".", editable = true }
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+gpu = { features = ["gpu"], solve-group = "default" }
+
+[tool.ruff.lint]
+fixable = ["I001", "F401", "UP"]
+ignore = ["E402", "E721", "E731", "E741", "F722"]
+select = ["E", "F", "I001", "UP"]
