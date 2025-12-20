@@ -148,7 +148,7 @@ def test_drop_config_defaults():
     config = DropConfig()
 
     assert config.percentile_threshold == 10.0
-    assert config.min_mtz_count == 5
+    assert config.min_mtz_count == 50  # Updated default
     assert config.max_rounds == 10
     assert config.min_weight_threshold == 0.0
 
@@ -179,6 +179,7 @@ def test_run_single_round():
         lambda_l1=0.1,
         lambda_l2=0.0,
         use_proximal=True,
+        use_remat=False,
         method="raw",
         config=config,
         current_to_original=current_to_original,

@@ -2,16 +2,22 @@ import jax.numpy as jnp
 from jaxtyping import Array, Complex, Float
 
 
-def pearson_cc(x: Float[Array, " n"], y: Float[Array, " n"]) -> Float[Array, ""]:
+def pearson_cc(
+    x: Float[Array, " n"],
+    y: Float[Array, " n"],
+    eps: float = 1e-8,
+) -> Float[Array, ""]:
     """
     Calculates the Pearson Correlation Coefficient between two vectors.
 
     Args:
         x: First vector of observations.
         y: Second vector of observations.
+        eps: Small constant to prevent division by zero (default: 1e-8).
 
     Returns:
-        The Pearson correlation coefficient.
+        The Pearson correlation coefficient. Returns 0.0 if either input has
+        zero variance.
     """
     mean_x = jnp.nanmean(x)
     mean_y = jnp.nanmean(y)
@@ -24,7 +30,8 @@ def pearson_cc(x: Float[Array, " n"], y: Float[Array, " n"]) -> Float[Array, ""]
     numerator = jnp.nansum(xm * ym)
     denominator = jnp.sqrt(jnp.nansum(xm**2)) * jnp.sqrt(jnp.nansum(ym**2))
 
-    return numerator / denominator
+    # Prevent division by zero - return 0 correlation if denominator is near-zero
+    return jnp.where(denominator > eps, numerator / denominator, 0.0)
 
 
 def compute_diffuse_intensity(

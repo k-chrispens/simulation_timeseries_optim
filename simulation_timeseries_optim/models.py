@@ -1,3 +1,4 @@
+from __future__ import annotations
 
 import equinox as eqx
 import jax
@@ -20,20 +21,30 @@ class Weights(eqx.Module):
         n_timepoints: int,
         method: str = "softmax",
         key: Array | None = None,
+        initial_params: Array | None = None,
     ):
         """
         Args:
             n_timepoints: Number of weights to learn.
             method: Parameterization method ('softmax', 'sigmoid', 'raw', 'abs').
             key: JAX PRNG key for initialization.
+            initial_params: Optional initial parameter values for warm starting.
         """
         if key is None:
             key = jax.random.PRNGKey(0)
 
         self.method = method
 
+        # Use provided initial parameters if available (warm start)
+        if initial_params is not None:
+            if len(initial_params) != n_timepoints:
+                raise ValueError(
+                    f"initial_params length ({len(initial_params)}) must match "
+                    f"n_timepoints ({n_timepoints})"
+                )
+            self.params = jnp.array(initial_params)
         # Initialize parameters based on method
-        if method == "softmax":
+        elif method == "softmax":
             # Logits initialized to 0 (uniform distribution)
             self.params = jnp.zeros(n_timepoints)
         elif method == "sigmoid":
@@ -50,7 +61,10 @@ class Weights(eqx.Module):
 
     def __call__(self) -> Float[Array, " n_timepoints"]:
         """
-        Returns the actual weights used for computation.
+        Returns the weights based on the parameterization method.
+
+        Returns:
+            Array of weights with shape (n_timepoints,).
         """
         if self.method == "softmax":
             return jax.nn.softmax(self.params)

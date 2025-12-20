@@ -1,5 +1,7 @@
 """Visualization utilities for weight tracking."""
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -91,7 +93,7 @@ def save_weight_histogram(
 
 
 def save_summary_plot(
-    history: "OptimizationHistory",
+    history: OptimizationHistory,
     output_dir: str,
 ) -> str:
     """
@@ -118,7 +120,9 @@ def save_summary_plot(
     mtz_counts = [r.n_mtz_start for r in history.rounds]
     mtz_counts.append(history.rounds[-1].n_mtz_end)
     round_labels = list(range(len(mtz_counts)))
-    ax1.plot(round_labels, mtz_counts, "o-", linewidth=2, markersize=8, color="steelblue")
+    ax1.plot(
+        round_labels, mtz_counts, "o-", linewidth=2, markersize=8, color="steelblue"
+    )
     ax1.set_xlabel("Round (0 = initial)")
     ax1.set_ylabel("MTZ Count")
     ax1.set_title("MTZ Count Over Rounds")

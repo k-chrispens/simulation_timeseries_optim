@@ -2,11 +2,20 @@ import argparse
 import glob
 
 import jax.numpy as jnp
+import numpy as np
+from jax.sharding import Mesh
 from loguru import logger
 
-from simulation_timeseries_optim.io import load_datasets, load_ground_truth
+from simulation_timeseries_optim.dropping import run_iterative_optimization
+from simulation_timeseries_optim.io import (
+    load_datasets,
+    load_datasets_sharded,
+    load_ground_truth,
+)
 from simulation_timeseries_optim.models import Weights
+from simulation_timeseries_optim.state import DropConfig
 from simulation_timeseries_optim.train import train
+from simulation_timeseries_optim.visualization import save_final_weights_plot
 
 
 def main():
@@ -80,6 +89,81 @@ def main():
         help="Directory for output files and plots",
     )
 
+    # dtype and performance arguments
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="complex64",
+        choices=["complex64", "complex128"],
+        help="Data type for structure factors (complex64 saves 50%% memory)",
+    )
+    parser.add_argument(
+        "--float-dtype",
+        type=str,
+        default="float32",
+        choices=["float32", "float64"],
+        help="Data type for weights and intensities",
+    )
+    parser.add_argument(
+        "--use-sharding",
+        action="store_true",
+        help="Enable multi-GPU sharding for large datasets",
+    )
+    parser.add_argument(
+        "--n-devices",
+        type=int,
+        default=None,
+        help="Number of GPUs to use (None = all available)",
+    )
+    parser.add_argument(
+        "--use-remat",
+        action="store_true",
+        help="Enable gradient checkpointing to reduce memory (may be slower)",
+    )
+    parser.add_argument(
+        "--subsample",
+        type=float,
+        default=1.0,
+        help="Fraction of reflections to keep (0.0 to 1.0)",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=42,
+        help="Random seed for subsampling",
+    )
+
+    # Early stopping and adaptive dropping arguments
+    parser.add_argument(
+        "--early-stop-threshold",
+        type=float,
+        default=1e-4,
+        help="Stop if loss improvement is below this threshold",
+    )
+    parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=2,
+        help="Number of rounds without improvement before early stopping",
+    )
+    parser.add_argument(
+        "--adaptive-dropping",
+        action="store_true",
+        help="Use adaptive dropping rate that decreases over rounds",
+    )
+    parser.add_argument(
+        "--initial-percentile",
+        type=float,
+        default=20.0,
+        help="Initial percentile for adaptive dropping",
+    )
+    parser.add_argument(
+        "--decay-rate",
+        type=float,
+        default=0.8,
+        help="Decay rate for adaptive dropping percentile",
+    )
+
     args = parser.parse_args()
 
     logger.info("=" * 60)
@@ -89,7 +173,7 @@ def main():
 
     # Load Ground Truth
     logger.info(f"Loading ground truth from {args.ground_truth}...")
-    y, valid_indices = load_ground_truth(args.ground_truth)
+    y, valid_indices = load_ground_truth(args.ground_truth, dtype=args.float_dtype)
     logger.info(f"Ground truth shape: {y.shape}")
 
     # Load Datasets
@@ -106,22 +190,63 @@ def main():
         logger.error("No files found!")
         return
 
-    F_array = load_datasets(files, valid_indices, labels="FC,PHIC")
-    logger.info(f"F_array shape: {F_array.shape}")
+    # Load datasets with optional sharding
+    mesh: Mesh | None = None
+    if args.use_sharding:
+        # Load with sharding and subsampling
+        result_sharded = load_datasets_sharded(
+            files,
+            valid_indices,
+            labels="FC,PHIC",
+            dtype=args.dtype,
+            n_devices=args.n_devices,
+            subsample_fraction=args.subsample,
+            random_seed=args.random_seed,
+            y=np.asarray(y),
+        )
+
+        # Unpack result based on length
+        if len(result_sharded) == 3:
+            F_array, y, mesh = result_sharded
+        else:
+            F_array, mesh = result_sharded
+
+        n_dev = len(mesh.devices)
+        logger.info(
+            f"F_array shape: {F_array.shape} (sharded across {n_dev} devices)"
+        )
+    else:
+        # Load datasets with subsampling
+        result = load_datasets(
+            files,
+            valid_indices,
+            labels="FC,PHIC",
+            dtype=args.dtype,
+            subsample_fraction=args.subsample,
+            random_seed=args.random_seed,
+            y=np.asarray(y),
+        )
+
+        # Unpack result
+        if isinstance(result, tuple):
+            F_array, y = result
+        else:
+            F_array = result
+
+        logger.info(f"F_array shape: {F_array.shape}")
 
     if args.iterative:
         # Iterative MTZ dropping mode
-        from simulation_timeseries_optim.dropping import run_iterative_optimization
-        from simulation_timeseries_optim.state import DropConfig
-        from simulation_timeseries_optim.visualization import (
-            save_final_weights_plot,
-        )
-
         config = DropConfig(
             percentile_threshold=args.drop_percentile,
             min_mtz_count=args.min_mtz,
             max_rounds=args.max_rounds,
             min_weight_threshold=args.min_weight,
+            early_stop_loss_threshold=args.early_stop_threshold,
+            early_stop_patience=args.early_stop_patience,
+            adaptive_dropping=args.adaptive_dropping,
+            initial_percentile=args.initial_percentile,
+            decay_rate=args.decay_rate,
         )
 
         history = run_iterative_optimization(
@@ -133,6 +258,7 @@ def main():
             lambda_l1=args.l1,
             lambda_l2=args.l2,
             use_proximal=args.proximal,
+            use_remat=args.use_remat,
             method=args.method,
             config=config,
             output_dir=args.output_dir,
@@ -164,6 +290,7 @@ def main():
             lambda_l1=args.l1,
             lambda_l2=args.l2,
             use_proximal=args.proximal,
+            use_remat=args.use_remat,
         )
 
         # Results

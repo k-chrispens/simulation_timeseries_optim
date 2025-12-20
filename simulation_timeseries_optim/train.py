@@ -58,21 +58,40 @@ def train(
     lambda_l1: float = 0.0,
     lambda_l2: float = 0.0,
     use_proximal: bool = False,
+    use_remat: bool = False,
 ) -> tuple[Weights, Float[Array, " n_steps"]]:
     """
     Main training loop.
+
+    Args:
+        model: Initial Weights model.
+        F_array: Structure factor array.
+        y: Ground truth intensity.
+        n_steps: Number of optimization steps.
+        learning_rate: Learning rate for optimizer.
+        lambda_l1: L1 regularization strength.
+        lambda_l2: L2 regularization strength.
+        use_proximal: Use proximal gradient descent for L1.
+        use_remat: Use gradient checkpointing to reduce memory (may be slower).
+
+    Returns:
+        Tuple of (final_model, loss_history).
     """
     optimizer = optax.adam(learning_rate)
     opt_state = optimizer.init(cast(optax.Params, model))
 
-    # Define the step function with proximal logic inside if possible,
-    # or handle proximal update explicitly.
+    # Optionally wrap loss_fn with remat for memory efficiency
+    # Use static_argnums to avoid tracer bool conversion errors with conditionals
+    if use_remat:
+        _loss_fn = jax.checkpoint(loss_fn, static_argnums=(3, 4, 5))  # type: ignore (Pylance thinks checkpoint isn't available from JAX)
+    else:
+        _loss_fn = loss_fn
 
     @eqx.filter_jit
     def step_fn(carrier, _):
         model, opt_state = carrier
 
-        loss_value, grads = eqx.filter_value_and_grad(loss_fn)(
+        loss_value, grads = eqx.filter_value_and_grad(_loss_fn)(
             model, F_array, y, lambda_l1, lambda_l2, use_proximal
         )
 
@@ -94,4 +113,4 @@ def train(
         step_fn, (model, opt_state), None, length=n_steps
     )
 
-    return final_model, losses
+    return final_model, jnp.asarray(losses)
